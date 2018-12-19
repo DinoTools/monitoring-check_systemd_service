@@ -93,6 +93,11 @@ $mp->add_perfdata(
     value => scalar @{$mp->opts->unit}
 );
 
+$mp->add_perfdata(
+    label => 'inactive',
+    value => $inactive_count
+);
+
 if ($inactive_count >= $mp->opts->warning) {
   $code = WARNING;
 }

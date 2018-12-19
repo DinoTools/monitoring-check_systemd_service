@@ -88,6 +88,11 @@ foreach my $unit_name (@{$mp->opts->unit}) {
   }
 }
 
+$mp->add_perfdata(
+    label => 'count',
+    value => scalar @{$mp->opts->unit}
+);
+
 if ($inactive_count >= $mp->opts->warning) {
   $code = WARNING;
 }

@@ -20,6 +20,10 @@ use constant WARNING    => 1;
 use constant CRITICAL   => 2;
 use constant UNKNOWN    => 3;
 
+# Service state
+use constant INACTIVE => 0;
+use constant ACTIVE   => 1;
+
 my $pkg_nagios_available = 0;
 my $pkg_monitoring_available = 0;
 
@@ -49,6 +53,18 @@ my $mp = Monitoring::Plugin->new(
 );
 
 $mp->add_arg(
+    spec     => 'critical|c=i',
+    help     => 'N units can be inactive',
+    default  => 1
+);
+
+$mp->add_arg(
+    spec     => 'warning|w=i',
+    help     => 'N units can be inactive',
+    default  => 1
+);
+
+$mp->add_arg(
     spec     => 'unit=s@',
     help     => 'Name of the unit',
     required => 1,
@@ -57,11 +73,38 @@ $mp->add_arg(
 
 $mp->getopts;
 
+my $inactive_count = 0;
+my $message = '';
+my $code = OK;
 foreach my $unit_name (@{$mp->opts->unit}) {
-    check_unit($unit_name);
+  my ($status, $msg) = check_unit($unit_name);
+  if ($message ne '') {
+    $message .= '; ';
+  }
+  $message .= $msg;
+
+  if ($status != ACTIVE) {
+    $inactive_count++;
+  }
 }
 
-my ($code, $message) = $mp->check_messages();
+$mp->add_perfdata(
+    label => 'count',
+    value => scalar @{$mp->opts->unit}
+);
+
+$mp->add_perfdata(
+    label => 'inactive',
+    value => $inactive_count
+);
+
+if ($inactive_count >= $mp->opts->warning) {
+  $code = WARNING;
+}
+if ($inactive_count >= $mp->opts->critical) {
+  $code = CRITICAL;
+}
+
 wrap_exit($code, $message);
 
 sub wrap_exit
@@ -115,29 +158,20 @@ sub check_unit
         }
         close $fh or wrap_exit(UNKNOWN, sprintf('There was an error "%s"', $!));
 
-        my $status;
+        my $status = INACTIVE;
+        my $active_time = 0;
         if ($values{'ActiveState'} =~ m/^(active|reloading|activating)$/) {
-            $status = OK;
-            $mp->add_perfdata(
-                label     => sprintf('%s current active time', $unit_name),
-                value     => time() - int($values{'ActiveEnterTimestamp'} / 1000000),
-                uom       => 's'
-            );
-        } elsif ($values{'ActiveState'} =~ m/^(deactivating)$/) {
-            $status = WARNING;
-        } elsif ($values{'ActiveState'} =~ m/^(inactive|failed)$/) {
-            $status = CRITICAL;
+            $status = ACTIVE;
+            $active_time = time() - int($values{'ActiveEnterTimestamp'} / 1000000)
         }
-        if (! defined $status) {
-            wrap_exit(
-                UNKNOWN,
-                sprintf('Unable to get ActiveState for unit "%s"', $unit_name)
-            );
-        }
-        
-        $mp->add_message(
-            $status,
-            sprintf('%s: %s(%s)', $unit_name, $values{ActiveState}, $values{SubState})
+        $mp->add_perfdata(
+            label     => sprintf('%s current active time', $unit_name),
+            value     => $active_time,
+            uom       => 's'
+        );
+        return(
+          $status,
+          sprintf('%s: %s(%s)', $unit_name, $values{ActiveState}, $values{SubState})
         );
     }
 }

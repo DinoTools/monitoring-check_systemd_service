@@ -213,7 +213,7 @@ sub check_fd_limit
         $output = `pstree -p $main_pid`;
         my @pids = $output =~ m/\((\d+)\)/g;
         foreach my $pid (@pids) {
-            my $output_ls = `ls /proc/$pid/fd/ | wc -l`;
+            my $output_ls = `sudo ls /proc/$pid/fd/ | wc -l`;
             my $value_warning = undef;
             my $value_critical = undef;
             my $value_max = undef;

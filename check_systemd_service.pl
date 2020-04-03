@@ -26,6 +26,7 @@ use constant ACTIVE   => 1;
 
 my $pkg_nagios_available = 0;
 my $pkg_monitoring_available = 0;
+my @g_long_message;
 
 BEGIN {
     eval {
@@ -71,6 +72,27 @@ $mp->add_arg(
     default  => []
 );
 
+$mp->add_arg(
+    spec     => 'check-open-files',
+    help     => 'Check open files limit',
+    required => 0,
+    default  => 0
+);
+
+$mp->add_arg(
+    spec     => 'open-files-warning=f',
+    help     => 'Check open files limit',
+    required => 0,
+    default  => 75
+);
+
+$mp->add_arg(
+    spec     => 'open-files-critical=f',
+    help     => 'Check open files limit',
+    required => 0,
+    default  => 90
+);
+
 $mp->getopts;
 
 my $inactive_count = 0;
@@ -92,7 +114,7 @@ $mp->add_perfdata(
     label => 'count',
     value => scalar @{$mp->opts->unit}
 );
-
+    
 $mp->add_perfdata(
     label => 'inactive',
     value => $inactive_count
@@ -105,7 +127,7 @@ if ($inactive_count >= $mp->opts->critical) {
   $code = CRITICAL;
 }
 
-wrap_exit($code, $message);
+wrap_exit($code, $message . "\n" . join("\n", @g_long_message));
 
 sub wrap_exit
 {
@@ -169,9 +191,71 @@ sub check_unit
             value     => $active_time,
             uom       => 's'
         );
+
+        if($mp->opts->get('check-open-files')) {
+            check_fd_limit($unit_object_name);
+        }
+
         return(
           $status,
           sprintf('%s: %s(%s)', $unit_name, $values{ActiveState}, $values{SubState})
         );
+    }
+}
+
+
+sub check_fd_limit
+{
+    my $unit_object_name = shift;
+    my $output = `busctl get-property org.freedesktop.systemd1 $unit_object_name org.freedesktop.systemd1.Service MainPID`;
+    if ($output =~ /^u (\d+)$/) {
+        my $main_pid = $1;
+        $output = `pstree -p $main_pid`;
+        my @pids = $output =~ m/\((\d+)\)/g;
+        foreach my $pid (@pids) {
+            my $output_ls = `ls /proc/$pid/fd/ | wc -l`;
+            my $value_warning = undef;
+            my $value_critical = undef;
+            my $value_max = undef;
+            open(my $fh, "/proc/$pid/limits") or wrap_exit(UNKNOWN, sprintf('There was an error "%s"', $!));
+            while( my $line = <$fh>)  {
+                if ($line =~ /^(?i)Max open files\s+(\d+)\s+(\d+)/) {
+                    $value_max = $2;
+                    last;
+                }
+            }
+            if(defined $value_max) {
+                $value_warning = int($value_max / 100 * $mp->opts->get('open-files-warning'));
+                $value_critical = int($value_max / 100 * $mp->opts->get('open-files-critical'));
+            }
+
+            close($fh);
+            if ($output_ls =~ /(\d+)/) {
+                my $fd_count = $1;
+                $mp->add_perfdata(
+                    label    => sprintf('pid_%d_fds', $pid),
+                    value    => $fd_count,
+                    max      => $value_max,
+                    warning  => $value_warning,
+                    critical => $value_critical,
+                );
+                my $status = $mp->check_threshold(
+                    check    => $fd_count,
+                    warning  => $value_warning,
+                    critical => $value_critical,
+                );
+                push(
+                    @g_long_message,
+                    sprintf(
+                        '  - PID: %d FD=%d (warn=%d, $crit=%d) %s',
+                        $pid,
+                        $fd_count,
+                        $value_warning,
+                        $value_critical,
+                        $status != OK ? '!!!' : ''
+                    )
+                );
+            }
+        }
     }
 }

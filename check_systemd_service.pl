@@ -211,9 +211,31 @@ sub check_fd_limit
     if ($output =~ /^u (\d+)$/) {
         my $main_pid = $1;
         $output = `pstree -p $main_pid`;
-        my @pids = $output =~ m/\((\d+)\)/g;
+        my @pids = $output =~ m/[^}]\((\d+)\)/g;
+
+        my $param_pids = join(',', @pids);
+        my %pid_ofs = ();
         foreach my $pid (@pids) {
-            my $output_ls = `sudo ls /proc/$pid/fd/ | wc -l`;
+            $pid_ofs{$pid} = 0;
+        }
+        $output = `sudo lsof -F pf -a -d '^cwd,^err,^ltx,^mem,^mmap,^pd,^rtd,^txt' -p $param_pids`;
+        open my $fh, '<', \$output or wrap_exit(UNKNOWN, sprintf('There was an error "%s"', $!));
+
+        my $cur_pid = undef;
+        while(my $line = <$fh>) {
+            if ($line =~ /^p(\d+)$/) {
+                $cur_pid = $1;
+                next;
+            }
+            if (!defined $cur_pid) {
+                next;
+            }
+            if ($line =~ /^f\d+$/) {
+                $pid_ofs{$cur_pid}++;
+            }
+        }
+
+        foreach my $pid (@pids) {
             my $value_warning = undef;
             my $value_critical = undef;
             my $value_max = undef;
@@ -224,38 +246,38 @@ sub check_fd_limit
                     last;
                 }
             }
+            close($fh);
+
             if(defined $value_max) {
                 $value_warning = int($value_max / 100 * $mp->opts->get('open-files-warning'));
                 $value_critical = int($value_max / 100 * $mp->opts->get('open-files-critical'));
             }
 
-            close($fh);
-            if ($output_ls =~ /(\d+)/) {
-                my $fd_count = $1;
-                $mp->add_perfdata(
-                    label    => sprintf('pid_%d_fds', $pid),
-                    value    => $fd_count,
-                    max      => $value_max,
-                    warning  => $value_warning,
-                    critical => $value_critical,
-                );
-                my $status = $mp->check_threshold(
-                    check    => $fd_count,
-                    warning  => $value_warning,
-                    critical => $value_critical,
-                );
-                push(
-                    @g_long_message,
-                    sprintf(
-                        '  - PID: %d FD=%d (warn=%d, $crit=%d) %s',
-                        $pid,
-                        $fd_count,
-                        $value_warning,
-                        $value_critical,
-                        $status != OK ? '!!!' : ''
-                    )
-                );
-            }
+
+            my $fd_count = $pid_ofs{$pid};
+            $mp->add_perfdata(
+                label    => sprintf('pid_%d_fds', $pid),
+                value    => $fd_count,
+                max      => $value_max,
+                warning  => $value_warning,
+                critical => $value_critical,
+            );
+            my $status = $mp->check_threshold(
+                check    => $fd_count,
+                warning  => $value_warning,
+                critical => $value_critical,
+            );
+            push(
+                @g_long_message,
+                sprintf(
+                    '  - PID: %d FD=%d (warn=%d, $crit=%d) %s',
+                    $pid,
+                    $fd_count,
+                    $value_warning,
+                    $value_critical,
+                    $status != OK ? '!!!' : ''
+                )
+            );
         }
     }
 }
